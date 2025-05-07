@@ -7,6 +7,7 @@ from base64 import b64decode
 from getpass import getpass
 import logging
 import platform
+import configparser
 
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
@@ -49,7 +50,6 @@ class NSSProxy:
 
     def load_nss(self):
         if platform.system() == "Windows":
-            # Danh sách các đường dẫn có thể chứa nss3.dll
             possible_paths = [
                 r"C:\Program Files\Mozilla Firefox\nss3.dll",
                 r"C:\Program Files (x86)\Mozilla Firefox\nss3.dll"
@@ -62,7 +62,6 @@ class NSSProxy:
             for nss_path, firefox_path in zip(possible_paths, firefox_paths):
                 if os.path.exists(nss_path):
                     try:
-                        # Thêm thư mục chứa DLL vào PATH (Python 3.8+)
                         os.add_dll_directory(firefox_path)
                         return ct.CDLL(nss_path)
                     except OSError:
@@ -118,15 +117,48 @@ class NSSProxy:
     def shutdown(self):
         self._NSS_Shutdown()
 
-def main():
-    # Đường dẫn profile trên Windows
+def get_default_firefox_profile_path():
     if platform.system() == "Windows":
-        #profile_path = os.path.expanduser(r"~AppData\Roaming\Mozilla\Firefox\Profiles\uzlnbl8d.default-release")
         user_profile = os.environ["USERPROFILE"]
-        profile_path = os.path.join(user_profile, "AppData", "Roaming", "Mozilla", "Firefox", "Profiles", "uzlnbl8d.default-release")
+        profiles_ini_path = os.path.join(user_profile, "AppData", "Roaming", "Mozilla", "Firefox", "profiles.ini")
     else:
-        profile_path = os.path.expanduser("~/firefox-profile")
-    
+        user_profile = os.environ["HOME"]
+        profiles_ini_path = os.path.join(user_profile, ".mozilla", "firefox", "profiles.ini")
+
+    config = configparser.ConfigParser()
+    config.read(profiles_ini_path)
+
+    # Ưu tiên chọn profile có hậu tố .default-release
+    for section in config.sections():
+        if config.has_option(section, "Path"):
+            path = config.get(section, "Path")
+            if ".default-release" in path:
+                is_relative = config.getboolean(section, "IsRelative", fallback=True)
+                if is_relative:
+                    if platform.system() == "Windows":
+                        return os.path.join(user_profile, "AppData", "Roaming", "Mozilla", "Firefox", path)
+                    else:
+                        return os.path.join(user_profile, ".mozilla", "firefox", path)
+                else:
+                    return path
+
+    # Nếu không tìm thấy, dùng profile được đánh dấu Default=1
+    for section in config.sections():
+        if config.has_option(section, "Default") and config.get(section, "Default") == "1":
+            relative_path = config.get(section, "Path")
+            is_relative = config.getboolean(section, "IsRelative", fallback=True)
+            if is_relative:
+                if platform.system() == "Windows":
+                    return os.path.join(user_profile, "AppData", "Roaming", "Mozilla", "Firefox", relative_path)
+                else:
+                    return os.path.join(user_profile, ".mozilla", "firefox", relative_path)
+            else:
+                return relative_path
+
+    raise FileNotFoundError("Không tìm thấy profile Firefox phù hợp.")
+
+def main():
+    profile_path = get_default_firefox_profile_path()
     logins_file = os.path.join(profile_path, "logins.json")
 
     if not os.path.isfile(logins_file):
@@ -153,7 +185,7 @@ def main():
 
     nss.shutdown()
 
-    with open("results.txt", "w") as f:
+    with open("results.txt", "w", encoding=DEFAULT_ENCODING) as f:
         for output in outputs:
             result = (
                 f"URL: {output['url']}\n"
@@ -161,7 +193,7 @@ def main():
                 f"Password: {output['password']}\n\n"
             )
             f.write(result)
-            print(result)  # In ra màn hình
+            print(result)
 
     LOG.info("Results saved to results.txt")
 
